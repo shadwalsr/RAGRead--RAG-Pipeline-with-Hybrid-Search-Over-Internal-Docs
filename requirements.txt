@@ -1,0 +1,8 @@
+pypdf
+unstructured
+unstructured[md]
+python-magic-bin; sys_platform == 'win32'
+langchain-text-splitters
+google-genai
+numpy
+python-dotenv
