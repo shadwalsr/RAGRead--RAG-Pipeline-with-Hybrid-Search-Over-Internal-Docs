@@ -11,6 +11,8 @@ __pycache__/
 
 # Processed data (regenerable)
 data/processed/
+data/vectorstore/
+data/bm25_index.pkl
 
 # IDE
 .vscode/

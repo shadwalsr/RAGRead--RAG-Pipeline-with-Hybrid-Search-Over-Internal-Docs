@@ -6,3 +6,5 @@ langchain-text-splitters
 google-genai
 numpy
 python-dotenv
+chromadb
+rank_bm25
