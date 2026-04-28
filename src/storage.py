@@ -1,10 +1,12 @@
 """
-Storage & Deduplication Module  (Step 5)
+Storage & Hybrid Retrieval Module  (Step 5 + 6)
 
 Provides:
 1. Deduplication Filter  – skips near-duplicate chunks (cosine sim > 0.95)
 2. Vector Storage        – ChromaDB with Gemini embeddings + rich metadata
 3. BM25 Keyword Index    – rank_bm25 kept in perfect sync with the vector store
+4. Smart Tokenizer       – collapses spaced PDF text before BM25 indexing
+   (e.g. 'W h y s c h o o l' → 'whyschool')
 """
 
 import os
@@ -130,10 +132,63 @@ class HybridStore:
         else:
             self._bm25 = None
 
+    # Characters that should break a spaced-letter run instead of being merged
+    _BREAK_CHARS = set('/-.,;:!?@#$%^&*()[]{}|<>=+\\_~`\'"\\\\')
+
     @staticmethod
     def _tokenize(text: str) -> List[str]:
-        """Simple whitespace tokeniser for BM25."""
-        return text.lower().split()
+        """
+        Smart tokeniser for BM25.
+
+        Problem: PDFs exported from design tools store text with spaces between
+        every character:  'W h y s c h o o l A c a d e m y 2 0 2 6 - P r e s e n t'
+
+        Strategy:
+          1. Split on whitespace to get raw single-char tokens (preserving case).
+          2. Walk tokens accumulating letters/digits into a 'run'.
+             - Punctuation chars flush the run and are discarded.
+             - Multi-char real words (len > 1) flush the run and are added as-is.
+          3. When flushing a run, it may form a merged word like 'WhyschoolAcademy'.
+             Use regex to split CamelCase and PascalCase boundaries before lowercasing.
+
+        Examples:
+            'W h y s c h o o l A c a d e m y'  -> ['whyschool', 'academy']
+            'S K I L L S Leadership'            -> ['skills', 'leadership']
+            'c o m / i n / s h a d w a l'      -> ['com', 'in', 'shadwal']
+            '2 0 2 6 - P r e s e n t'          -> ['2026', 'present']
+            'Python developer'                  -> ['python', 'developer']
+        """
+        import re
+        raw = text.split()          # preserve case for boundary detection
+        result: List[str] = []
+        run: List[str] = []
+
+        def split_camel_case(word: str) -> List[str]:
+            # Split lower->Upper (e.g. WhyschoolAcademy -> Whyschool Academy)
+            s1 = re.sub(r'([a-z])([A-Z])', r'\1 \2', word)
+            # Split UPPER->UpperLower (e.g. SKILLSLeadership -> SKILLS Leadership)
+            s2 = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', s1)
+            return s2.lower().split()
+
+        def flush_run():
+            if run:
+                merged = ''.join(run)
+                result.extend(split_camel_case(merged))
+                run.clear()
+
+        for token in raw:
+            if len(token) == 1 and token in HybridStore._BREAK_CHARS:
+                flush_run()                           # punctuation → word break
+            elif len(token) == 1:
+                run.append(token)                     # accumulate
+            else:
+                flush_run()                           # real multi-char word
+                result.extend(split_camel_case(token))
+
+        flush_run()
+        return [t for t in result if len(t) > 0]
+
+
 
     # ------------------------------------------------------------------
     # Deduplication
@@ -257,11 +312,20 @@ class HybridStore:
         return stats
 
     # ------------------------------------------------------------------
-    # Search helpers (preview — will be expanded in Step 6)
+    # Search helpers
     # ------------------------------------------------------------------
 
-    def vector_search(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """Semantic search via ChromaDB."""
+    def vector_search(self, query: str, n_results: int = 10) -> List[Dict[str, Any]]:
+        """
+        Dense semantic search via ChromaDB.
+        Default k=10 gives the hybrid fuser enough candidates to re-rank.
+        Results are sorted by ascending cosine distance (most similar first).
+        """
+        # Cap n_results to the collection size to avoid ChromaDB errors
+        n_results = min(n_results, self._collection.count())
+        if n_results == 0:
+            return []
+
         query_emb = get_embeddings([query])
         results = self._collection.query(
             query_embeddings=query_emb,
@@ -274,6 +338,7 @@ class HybridStore:
                 "content": results["documents"][0][i],
                 "metadata": results["metadatas"][0][i],
                 "distance": results["distances"][0][i],
+                "similarity": round(1.0 - results["distances"][0][i], 4),
             })
         return out
 
