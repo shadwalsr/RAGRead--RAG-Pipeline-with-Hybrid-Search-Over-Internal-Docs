@@ -65,6 +65,12 @@ During testing, we encountered the reality of production API limits (e.g., `429 
 2. **Flexibility:** The `alpha` weighting gives the system the ability to adapt to different user intents on the fly without rebuilding the database.
 3. **Graceful Degradation:** A production system must not break if an external API goes down. The fallback mechanism guarantees that the user always gets a highly relevant response, even if the "senior-level" reranker is temporarily unavailable.
 
+### Case Study: Whyschool — The Fusion Win (Phase 2)
+Searching for *"Whyschool Academy"* is a perfect test for RRF:
+1. **Semantic Search** might struggle because "Whyschool" is a unique name, and the embedding might prioritize more generic "Education" chunks.
+2. **Keyword Search (BM25)** matches "Whyschool" exactly but might rank a smaller chunk (like a skills list) higher than the actual experience block.
+3. **The Fusion Layer (RRF):** By combining both, the chunk containing your *Founding Team* role at Whyschool was boosted to the #1 position, providing the generator with the exact context it needed.
+
 ---
 
 ## 5. Why This Addition Was Necessary (The Interview Perspective)

@@ -275,7 +275,12 @@ production_rag/
 
 ## 5. Key Learnings
 
-### 5.1 ChromaDB Uses Cosine Distance, Not Similarity
+### 5.1 Case Study: The "Whyschool" Recovery (Phase 2)
+In Report 1, we saw how `W h y s c h o o l` was unsearchable. 
+- **The Solution:** In this phase, we implemented a custom **Two-Pass Tokenizer**. It identifies runs of single characters (W, h, y...) and collapses them into a single word: `whyschool`.
+- **The Result:** The BM25 index now correctly maps the query "Whyschool" to the relevant chunks. This was the first "Senior-level" win of the project—solving a data-quality problem that stops most basic RAG tutorials in their tracks.
+
+### 5.2 ChromaDB Uses Cosine Distance, Not Similarity
 
 ChromaDB returns `distance = 1 - similarity`. A distance of 0.34 means a
 similarity of 0.66 — which is "quite similar" in embedding space. I initially

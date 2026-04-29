@@ -289,8 +289,10 @@ python src/loader.py --strategy semantic
 
 ## 5. Key Learnings
 
-### 5.1 PDF Text Extraction is Messy
-The resume PDF had spaced-out letters (`S K I L L S` instead of `SKILLS`), which is common in designed PDFs from tools like Canva. This affected all three strategies equally, highlighting that **preprocessing quality matters more than chunking sophistication**.
+### 5.1 Case Study: The "W h y s c h o o l" Artifact (Phase 1)
+The resume PDF contained a classic "designer PDF" artifact where the company name was stored as `W h y s c h o o l  A c a d e m y`. 
+- **The Problem:** In this phase, basic chunking strategies (Fixed and Structural) treated these as individual letters. A search for "Whyschool" would return zero results because the keyword simply didn't exist in the text.
+- **The Lesson:** This highlighted that even the best chunking strategy fails if the underlying text extraction isn't "cleaned" first.
 
 ### 5.2 Semantic Chunking Reveals Document Structure
 Even though the resume PDF had no markdown headers or semantic HTML, the Gemini embedding model was able to detect where "Skills" ended and "Experience" began purely from meaning. This is powerful for unstructured documents.

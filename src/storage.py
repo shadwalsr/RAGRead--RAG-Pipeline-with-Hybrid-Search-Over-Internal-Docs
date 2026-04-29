@@ -315,11 +315,10 @@ class HybridStore:
     # Search helpers
     # ------------------------------------------------------------------
 
-    def vector_search(self, query: str, n_results: int = 10) -> List[Dict[str, Any]]:
+    def vector_search(self, query: str, n_results: int = 10, where: Dict = None) -> List[Dict[str, Any]]:
         """
         Dense semantic search via ChromaDB.
-        Default k=10 gives the hybrid fuser enough candidates to re-rank.
-        Results are sorted by ascending cosine distance (most similar first).
+        where: Optional metadata filter dict (e.g. {"chunking_strategy": "fixed"})
         """
         # Cap n_results to the collection size to avoid ChromaDB errors
         n_results = min(n_results, self._collection.count())
@@ -330,6 +329,7 @@ class HybridStore:
         results = self._collection.query(
             query_embeddings=query_emb,
             n_results=n_results,
+            where=where
         )
         out = []
         for i in range(len(results["ids"][0])):
@@ -342,28 +342,43 @@ class HybridStore:
             })
         return out
 
-    def bm25_search(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """Keyword search via BM25."""
+    def bm25_search(self, query: str, n_results: int = 5, strategy: str = None) -> List[Dict[str, Any]]:
+        """
+        Keyword search via BM25.
+        strategy: If provided, only returns chunks from this strategy.
+        """
         if not self._bm25:
             return []
 
         tokens = self._tokenize(query)
         scores = self._bm25.get_scores(tokens)
-        top_indices = np.argsort(scores)[::-1][:n_results]
+        
+        # Sort all indices by score descending
+        top_indices = np.argsort(scores)[::-1]
 
         out = []
         for idx in top_indices:
+            if len(out) >= n_results:
+                break
+                
             if scores[idx] > 0:
                 doc_id = self._bm25_ids[idx]
-                # Fetch full doc from ChromaDB
+                
+                # Fetch metadata to check strategy
                 result = self._collection.get(ids=[doc_id])
-                if result and result["documents"]:
-                    out.append({
-                        "id": doc_id,
-                        "content": result["documents"][0],
-                        "metadata": result["metadatas"][0] if result["metadatas"] else {},
-                        "bm25_score": float(scores[idx]),
-                    })
+                if not result or not result["documents"]:
+                    continue
+                    
+                meta = result["metadatas"][0]
+                if strategy and meta.get("chunking_strategy") != strategy:
+                    continue
+
+                out.append({
+                    "id": doc_id,
+                    "content": result["documents"][0],
+                    "metadata": meta,
+                    "bm25_score": round(float(scores[idx]), 4),
+                })
         return out
 
     def get_stats(self) -> Dict[str, Any]:

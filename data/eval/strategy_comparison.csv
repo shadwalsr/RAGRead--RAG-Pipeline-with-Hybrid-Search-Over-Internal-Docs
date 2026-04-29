@@ -1,0 +1,4 @@
+Strategy,Avg Correctness,Avg Confidence,Avg Citation Coverage,Avg Latency (s)
+Fixed,0.33,,,5.46
+Structural,0.33,,,5.37
+Semantic,0.0,,,5.11

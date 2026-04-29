@@ -96,7 +96,7 @@ Chunks:
 '''
         try:
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-flash-latest',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type='application/json',
@@ -122,16 +122,19 @@ Chunks:
             print(f"WARNING: LLM Reranking failed ({e}). Falling back to RRF.")
             return candidates[:top_k]
 
-    def retrieve(self, query: str, top_k: int = 5, alpha: float = 0.5, use_reranker: bool = False) -> List[Dict[str, Any]]:
+    def retrieve(self, query: str, top_k: int = 5, alpha: float = 0.5, use_reranker: bool = False, strategy: str = None) -> List[Dict[str, Any]]:
         """
         Executes a hybrid search for the given query.
         
         alpha: Weight given to vector search (0.0 to 1.0). Default 0.5 (equal weight).
         use_reranker: If True, sends the fused top 20 results to an LLM to re-evaluate and filter.
+        strategy: If provided, only returns chunks from this specific strategy (fixed, structural, semantic).
         """
         # Step 1: Fetch candidates (k=10 as required for production)
-        vector_candidates = self.store.vector_search(query, n_results=10)
-        bm25_candidates = self.store.bm25_search(query, n_results=10)
+        where_filter = {"chunking_strategy": strategy} if strategy else None
+        
+        vector_candidates = self.store.vector_search(query, n_results=10, where=where_filter)
+        bm25_candidates = self.store.bm25_search(query, n_results=10, strategy=strategy)
         
         # Step 2: Fuse with RRF and apply weights
         fused_results = self._reciprocal_rank_fusion(

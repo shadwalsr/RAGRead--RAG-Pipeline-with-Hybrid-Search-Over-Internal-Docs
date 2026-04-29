@@ -15,7 +15,7 @@ class RAGGenerator:
     Handles the final LLM generation step of the RAG pipeline.
     """
     
-    def __init__(self, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, model_name: str = "gemini-flash-latest"):
         api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise EnvironmentError("Set GOOGLE_API_KEY to use the Generator.")
