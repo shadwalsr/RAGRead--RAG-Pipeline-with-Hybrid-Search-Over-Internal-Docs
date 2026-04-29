@@ -1,242 +1,82 @@
-"""
-Strategic Chunking Module
-
-Provides three switchable chunking strategies with provenance tracking:
-1. Fixed-Size Chunking   - 500 chars, 50-char overlap (baseline)
-2. Structure-Aware       - LangChain RecursiveCharacterTextSplitter
-3. Semantic Chunking     - Gemini embedding-based topic segmentation
-"""
-
+import hashlib
 import re
+from google import genai
 import os
-import numpy as np
-from typing import List, Dict, Any, Optional
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+def generate_id(text):
+    # stable ID based on content so we don't index the same chunk twice
+    return hashlib.md5(text.encode()).hexdigest()
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def split_text(full_text, source_name, strategy="structure_aware"):
+    # main entry point for splitting a doc into pieces
+    # three modes: fixed (dumb), structural (regex-based), semantic (AI-based)
+    
+    if strategy == "fixed_size":
+        return _fixed_split(full_text, source_name)
+    elif strategy == "semantic":
+        return _semantic_split(full_text, source_name)
+    else:
+        # default to structural since it's the most reliable for resumes/docs
+        return _structural_split(full_text, source_name)
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity between two vectors."""
-    denom = np.linalg.norm(a) * np.linalg.norm(b)
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
-
-
-def _split_into_sentences(text: str) -> List[str]:
-    """
-    Naive sentence splitter that handles common abbreviations.
-    Splits on period/question-mark/exclamation followed by whitespace.
-    """
-    sentences = re.split(r'(?<=[.?!])\s+', text)
-    return [s.strip() for s in sentences if s.strip()]
-
-
-# ---------------------------------------------------------------------------
-# 1. Fixed-Size Chunking
-# ---------------------------------------------------------------------------
-
-def fixed_size_chunk(
-    text: str,
-    chunk_size: int = 500,
-    overlap: int = 50,
-    base_metadata: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Splits *text* into fixed-size windows with overlap.
-
-    Returns a list of dicts: {"content": str, "metadata": dict}
-    """
-    chunks: List[Dict[str, Any]] = []
-    start = 0
-    idx = 0
-
-    while start < len(text):
-        end = start + chunk_size
-        chunk_text = text[start:end]
-
-        meta = dict(base_metadata) if base_metadata else {}
-        meta["chunking_strategy"] = "fixed_size"
-        meta["chunk_index"] = idx
-        meta["chunk_char_start"] = start
-        meta["chunk_char_end"] = min(end, len(text))
-
-        chunks.append({"content": chunk_text, "metadata": meta})
-
-        start += chunk_size - overlap
-        idx += 1
-
+def _fixed_split(text, src, size=500, overlap=50):
+    chunks = []
+    # very basic sliding window
+    for i in range(0, len(text), size - overlap):
+        chunk_content = text[i:i + size]
+        chunks.append({
+            "id": f"{src}_fixed_{i}",
+            "content": chunk_content,
+            "metadata": {"source": src, "chunking_strategy": "fixed"}
+        })
     return chunks
 
-
-# ---------------------------------------------------------------------------
-# 2. Structure-Aware Chunking
-# ---------------------------------------------------------------------------
-
-def structure_aware_chunk(
-    text: str,
-    chunk_size: int = 500,
-    overlap: int = 50,
-    base_metadata: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Uses LangChain's RecursiveCharacterTextSplitter which tries to split on
-    double newlines → single newlines → spaces → characters, keeping
-    related paragraphs together.
-    """
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=overlap,
-        separators=["\n\n", "\n", " ", ""],
-        length_function=len,
-    )
-
-    raw_chunks = splitter.split_text(text)
-    chunks: List[Dict[str, Any]] = []
-
-    for idx, chunk_text in enumerate(raw_chunks):
-        meta = dict(base_metadata) if base_metadata else {}
-        meta["chunking_strategy"] = "structure_aware"
-        meta["chunk_index"] = idx
-
-        chunks.append({"content": chunk_text, "metadata": meta})
-
+def _structural_split(text, src):
+    # split by natural boundaries like newlines or double-newlines
+    # good for keeping sections together
+    sections = re.split(r'\n\n+', text)
+    chunks = []
+    for i, section in enumerate(sections):
+        if not section.strip(): continue
+        chunks.append({
+            "id": f"{src}_struct_{i}",
+            "content": section.strip(),
+            "metadata": {"source": src, "chunking_strategy": "structural"}
+        })
     return chunks
 
-
-# ---------------------------------------------------------------------------
-# 3. Semantic Chunking
-# ---------------------------------------------------------------------------
-
-def _get_embeddings(sentences: List[str], model_name: str = "gemini-embedding-001") -> List[np.ndarray]:
-    """
-    Generates embeddings for a list of sentences using the Gemini
-    embedding model via the google-genai SDK.
-    Requires GOOGLE_API_KEY to be set.
-    """
-    from google import genai
-
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+def _semantic_split(text, src):
+    # using the LLM to find the "best" break points
+    # warning: this is slow and uses tokens, but very high quality
+    api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        raise EnvironmentError(
-            "Set GOOGLE_API_KEY or GEMINI_API_KEY environment variable "
-            "to use semantic chunking."
-        )
-
+        print("no API key for semantic chunking - falling back to structural")
+        return _structural_split(text, src)
+        
     client = genai.Client(api_key=api_key)
+    
+    # we ask the AI to mark where the topics change
+    prompt = f"""Break the following text into distinct topical sections.
+Use the marker '---SECTION---' to separate them.
+Do not change the text itself.
 
-    # Embed in a single batch for efficiency
-    result = client.models.embed_content(
-        model=model_name,
-        contents=sentences,
-    )
-
-    return [np.array(e.values) for e in result.embeddings]
-
-
-def semantic_chunk(
-    text: str,
-    similarity_threshold: float = 0.75,
-    base_metadata: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Splits text into chunks based on *meaning*.
-
-    1. Split text into sentences.
-    2. Embed each sentence with Gemini.
-    3. Walk through sentence pairs; when the cosine similarity drops
-       below *similarity_threshold*, start a new chunk.
-
-    Falls back to structure-aware chunking if embedding fails.
-    """
-    sentences = _split_into_sentences(text)
-
-    if len(sentences) <= 1:
-        meta = dict(base_metadata) if base_metadata else {}
-        meta["chunking_strategy"] = "semantic"
-        meta["chunk_index"] = 0
-        return [{"content": text, "metadata": meta}]
-
+TEXT:
+{text[:4000]} # capping to 4k chars to stay safe with context limits
+"""
     try:
-        embeddings = _get_embeddings(sentences)
-    except Exception as e:
-        print(f"[semantic_chunk] Embedding failed ({e}), falling back to structure_aware.")
-        return structure_aware_chunk(text, base_metadata=base_metadata)
-
-    # Walk pairs and decide where to split
-    chunks: List[Dict[str, Any]] = []
-    current_group: List[str] = [sentences[0]]
-    idx = 0
-
-    for i in range(1, len(sentences)):
-        sim = _cosine_similarity(embeddings[i - 1], embeddings[i])
-
-        if sim < similarity_threshold:
-            # Topic shift detected — flush current group
-            meta = dict(base_metadata) if base_metadata else {}
-            meta["chunking_strategy"] = "semantic"
-            meta["chunk_index"] = idx
-            meta["avg_similarity"] = round(float(
-                np.mean([
-                    _cosine_similarity(embeddings[j], embeddings[j + 1])
-                    for j in range(max(0, i - len(current_group)), i - 1)
-                ]) if len(current_group) > 1 else sim
-            ), 4)
-
+        resp = client.models.generate_content(model="gemini-flash-latest", contents=prompt)
+        sections = resp.text.split("---SECTION---")
+        
+        chunks = []
+        for i, s in enumerate(sections):
+            content = s.strip()
+            if not content: continue
             chunks.append({
-                "content": " ".join(current_group),
-                "metadata": meta,
+                "id": f"{src}_semantic_{i}",
+                "content": content,
+                "metadata": {"source": src, "chunking_strategy": "semantic"}
             })
-            current_group = []
-            idx += 1
-
-        current_group.append(sentences[i])
-
-    # Flush final group
-    if current_group:
-        meta = dict(base_metadata) if base_metadata else {}
-        meta["chunking_strategy"] = "semantic"
-        meta["chunk_index"] = idx
-        chunks.append({"content": " ".join(current_group), "metadata": meta})
-
-    return chunks
-
-
-# ---------------------------------------------------------------------------
-# Dispatcher
-# ---------------------------------------------------------------------------
-
-STRATEGIES = {
-    "fixed_size": fixed_size_chunk,
-    "structure_aware": structure_aware_chunk,
-    "semantic": semantic_chunk,
-}
-
-
-def chunk_document(
-    text: str,
-    strategy: str = "structure_aware",
-    base_metadata: Optional[Dict[str, Any]] = None,
-    **kwargs,
-) -> List[Dict[str, Any]]:
-    """
-    Public entry-point. Pick a strategy by name and chunk the text.
-
-    Args:
-        text:          The plain-text content to chunk.
-        strategy:      One of "fixed_size", "structure_aware", or "semantic".
-        base_metadata: Dict of fields to copy into every chunk's metadata.
-        **kwargs:      Extra keyword args forwarded to the strategy function
-                       (e.g. chunk_size, overlap, similarity_threshold).
-    """
-    if strategy not in STRATEGIES:
-        raise ValueError(
-            f"Unknown strategy '{strategy}'. "
-            f"Choose from: {list(STRATEGIES.keys())}"
-        )
-
-    fn = STRATEGIES[strategy]
-    return fn(text, base_metadata=base_metadata, **kwargs)
+        return chunks
+    except Exception as e:
+        print(f"semantic split failed: {e}")
+        return _structural_split(text, src)

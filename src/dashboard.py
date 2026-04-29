@@ -1,210 +1,228 @@
 import streamlit as st
 import requests
-import pandas as pd
-import plotly.graph_objects as go
 
-# --- Config ---
-API_BASE_URL = "http://localhost:8000"
+# quick and dirty helper - just wraps the long inline html into something readable
+def make_source_card(chunk_num, src_name, rank_score, preview_text):
+    return f"""
+        <div class="source-card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: 700; color: #1e40af;">#{chunk_num} — {src_name}</span>
+                <span style="font-size: 0.8rem; color: #64748b; background: #f1f5f9; padding: 2px 8px; border-radius: 12px;">score: {rank_score:.2f}</span>
+            </div>
+            <div style="margin-top: 10px; font-size: 0.95rem; color: #475569; line-height: 1.5;">
+                {preview_text}
+            </div>
+        </div>
+    """
 
-st.set_page_config(
-    page_title="RAGRead Dashboard",
-    page_icon="🚀",
-    layout="wide"
-)
+# pick the right color for the confidence number
+# green if high, orange if medium, red if low
+def confidence_color(score):
+    if score >= 7:
+        return "#10b981"
+    elif score >= 5:
+        return "#f59e0b"
+    return "#ef4444"
 
-# --- Custom Styling & Premium Branding ---
+
+API_URL = "http://localhost:8000"
+
+st.set_page_config(page_title="RAGRead", page_icon="📖", layout="wide")
+
+# injecting styles manually because streamlit's native theming is too limited
+# tried the config.toml approach first but couldn't get the card shadows to work that way
 st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-        
+
         html, body, [class*="st-"] {
             font-family: 'Inter', sans-serif;
         }
 
-        /* Main Background & Title */
-        .main {
-            background-color: #f8f9fa;
-        }
-        
-        .stTitle {
-            font-weight: 800;
-            letter-spacing: -1px;
-            background: linear-gradient(90deg, #1e3a8a, #3b82f6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            padding-bottom: 20px;
-        }
+        .main { background-color: #f8f9fa; }
 
-        /* Glassmorphism Cards */
         .metric-card {
-            background: rgba(255, 255, 255, 0.8);
-            backdrop-filter: blur(10px);
+            background: rgba(255,255,255,0.85);
             border: 1px solid rgba(0,0,0,0.05);
             border-radius: 12px;
             padding: 20px;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08);
             margin-bottom: 15px;
         }
 
         .source-card {
-            background: #ffffff;
-            border-left: 5px solid #3b82f6;
+            background: #fff;
+            border-left: 4px solid #3b82f6;
             border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 15px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            transition: transform 0.2s ease;
+            padding: 18px 20px;
+            margin-bottom: 14px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            transition: box-shadow 0.2s;
         }
 
         .source-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.09);
         }
 
-        /* Typography Fixes */
-        h3 {
-            font-weight: 700 !important;
-            color: #1e293b !important;
-            margin-top: 25px !important;
-        }
+        h3 { color: #1e293b !important; margin-top: 22px !important; }
 
-        .citation-tag {
-            background-color: #eff6ff;
+        /* little blue pill for citations like [1] */
+        .cite {
+            background: #eff6ff;
             color: #1e40af;
             font-weight: 600;
-            padding: 2px 6px;
+            padding: 1px 6px;
             border-radius: 4px;
+            font-size: 0.9em;
         }
 
-        /* Hide Streamlit Branding */
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- Sidebar ---
+
+# sidebar controls
 with st.sidebar:
-    st.markdown("### 🛠️ Configuration")
-    top_k = st.slider("Retrieval Depth (K)", 1, 10, 5)
-    alpha = st.select_slider("Search Mode", 
+    st.markdown("### Settings")
+
+    num_chunks = st.slider("How many chunks to retrieve", 1, 10, 5)
+
+    # 0 = pure keyword, 1 = pure semantic, 0.5 is the balanced sweet spot
+    search_blend = st.select_slider(
+        "Search blend",
         options=[0.0, 0.25, 0.5, 0.75, 1.0],
         value=0.5,
-        help="0.0 = Pure Keyword, 0.5 = Hybrid, 1.0 = Pure Semantic"
+        help="Left = keyword-heavy, right = semantic-heavy"
     )
-    use_reranker = st.toggle("Deep LLM Reranking", value=True)
-    strategy = st.selectbox("Document Strategy", ["All", "Fixed", "Structural", "Semantic"])
 
-    st.markdown("---")
-    st.markdown("### 📂 Active Corpus")
-    if st.button("Refresh Index", use_container_width=True):
-        try:
-            docs = requests.get(f"{API_BASE_URL}/v1/documents").json()
-            for doc in docs:
-                st.caption(f"• {doc['filename']} ({doc['size_kb']} KB)")
-        except:
-            st.error("API Offline")
+    rerank_on = st.toggle("LLM reranking", value=True)
+    chunk_strategy = st.selectbox("Chunking strategy", ["All", "Fixed", "Structural", "Semantic"])
 
-# --- Main Dashboard ---
-st.title("RAGRead Platform")
-st.markdown("#### *Advanced Hybrid Retrieval & Factual Verification*")
+    st.divider()
+    st.markdown("### Indexed files")
 
-query = st.text_input("", placeholder="Ask a technical or professional question...", label_visibility="collapsed")
+    if st.button("Refresh", use_container_width=True):
+        doc_list = requests.get(f"{API_URL}/v1/documents").json()
+        for d in doc_list:
+            st.caption(f"• {d['filename']}  ({d['size_kb']} KB)")
 
-if query:
-    with st.spinner("Analyzing corpus and verifying citations..."):
-        try:
-            # 1. Main Request
-            payload = {
-                "query": query, "top_k": top_k, "alpha": alpha, 
-                "use_reranker": use_reranker, 
-                "strategy": strategy.lower() if strategy != "All" else None
-            }
-            response = requests.post(f"{API_BASE_URL}/v1/ask", json=payload).json()
-            
-            if "detail" in response:
-                st.error(f"API Error: {response['detail']}")
-            else:
-                # Layout: Answer (Left) | Metrics (Right)
-                col1, col2 = st.columns([2.2, 1])
-                
-                with col1:
-                    st.markdown("### 🤖 Verified Answer")
-                    if response["can_answer"]:
-                        # Prettify citations
-                        answer = response["answer"].replace("[", '<span class="citation-tag">[').replace("]", "]</span>")
-                        st.markdown(f'<div style="font-size: 1.1rem; line-height: 1.6; color: #334155;">{answer}</div>', unsafe_allow_html=True)
-                    else:
-                        st.warning("Structured Refusal: Insufficient Context")
-                        refusal = response["refusal"]
-                        st.markdown(f"**I found info about:** {refusal['what_is_found']}")
-                        st.markdown(f"**But I'm missing:** {refusal['what_is_missing']}")
-                        st.info(f"💡 *{refusal['suggested_documents']}*")
 
-                with col2:
-                    st.markdown("### 📈 Quality Score")
-                    
-                    # Confidence Gauge
-                    conf = response["confidence_score"]
-                    color = "#10b981" if conf >= 7 else "#f59e0b" if conf >= 5 else "#ef4444"
-                    
-                    st.markdown(f"""
-                        <div class="metric-card">
-                            <div style="font-size: 0.9rem; color: #64748b; font-weight: 600; text-transform: uppercase;">Confidence Score</div>
-                            <div style="font-size: 2.5rem; font-weight: 800; color: {color};">{conf}<span style="font-size: 1rem; color: #94a3b8;">/10</span></div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    coverage = response["citation_coverage"]
-                    st.markdown(f"""
-                        <div class="metric-card">
-                            <div style="font-size: 0.9rem; color: #64748b; font-weight: 600; text-transform: uppercase;">Citation Coverage</div>
-                            <div style="font-size: 2rem; font-weight: 700; color: #1e3a8a;">{coverage}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
+# --- page ---
 
-                st.markdown("---")
-                
-                # Side-by-Side Comparison (Money Shot)
-                with st.expander("🔍 System Comparison: Hybrid vs. Dense Search Efficiency"):
-                    col_a, col_b = st.columns(2)
-                    dense_payload = payload.copy()
-                    dense_payload["alpha"] = 1.0 # Pure semantic
-                    dense_payload["use_reranker"] = False 
-                    dense_res = requests.post(f"{API_BASE_URL}/v1/ask", json=dense_payload).json()
+st.title("RAGRead")
+st.markdown("#### *Hybrid Retrieval — Citation Verified*")
+st.markdown("")  # a bit of breathing room
 
-                    with col_a:
-                        st.caption("🌌 DENSE-ONLY (SEMANTIC)")
-                        for s in dense_res["sources"][:3]:
-                            st.markdown(f'<div style="font-size: 0.8rem; padding: 5px; background: #f1f5f9; border-radius: 4px; margin-bottom: 5px;">📄 {s["source"]} | ID: {s["id"][:8]}...</div>', unsafe_allow_html=True)
-                    with col_b:
-                        st.caption("🧬 HYBRID FUSION (OUR ENGINE)")
-                        for s in response["sources"][:3]:
-                            st.markdown(f'<div style="font-size: 0.8rem; padding: 5px; background: #eff6ff; border-radius: 4px; margin-bottom: 5px;">📄 {s["source"]} | Score: {s["score"]:.4f}</div>', unsafe_allow_html=True)
+user_q = st.text_input("", placeholder="Ask anything about your documents...", label_visibility="collapsed")
 
-                # Ranked Chunks
-                st.markdown("### 📚 Ground Truth: Source Evidence")
-                for i, source in enumerate(response["sources"]):
-                    st.markdown(f"""
-                        <div class="source-card">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span style="font-weight: 700; color: #1e40af;">CHUNK {i+1} — {source['source']}</span>
-                                <span style="font-size: 0.8rem; color: #64748b; background: #f1f5f9; padding: 2px 8px; border-radius: 12px;">Rank Score: {source['score']:.2f}</span>
-                            </div>
-                            <div style="margin-top: 10px; font-size: 0.95rem; color: #475569; line-height: 1.5;">
-                                {source['content_preview']}
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-        except Exception as e:
-            st.error(f"Engine Offline: {e}")
-
-else:
+if not user_q:
     st.markdown("""
-        <div style="text-align: center; padding: 50px 0; background: #ffffff; border-radius: 20px; border: 1px dashed #cbd5e1;">
-            <div style="font-size: 3rem;">📖</div>
-            <h2 style="color: #1e293b;">Your Document Brain is Ready</h2>
-            <p style="color: #64748b;">Ask a question above to begin retrieval.</p>
+        <div style="text-align:center; padding:60px 20px; background:#fff; border-radius:16px; border: 1px dashed #cbd5e1; margin-top:20px;">
+            <div style="font-size:2.5rem;">📖</div>
+            <h3 style="color:#1e293b; margin-top:12px;">Ask a question to get started</h3>
+            <p style="color:#64748b;">The pipeline will retrieve, rerank, and verify before answering.</p>
         </div>
     """, unsafe_allow_html=True)
 
+else:
+    with st.spinner("Retrieving and verifying..."):
+
+        strat_val = chunk_strategy.lower() if chunk_strategy != "All" else None
+
+        req_body = {
+            "query": user_q,
+            "top_k": num_chunks,
+            "alpha": search_blend,
+            "use_reranker": rerank_on,
+            "strategy": strat_val
+        }
+
+        raw = requests.post(f"{API_URL}/v1/ask", json=req_body)
+        data = raw.json()
+
+        if "detail" in data:
+            st.error(data["detail"])
+
+        else:
+            left_col, right_col = st.columns([2.2, 1])
+
+            with left_col:
+                st.markdown("### Answer")
+
+                if data["can_answer"]:
+                    # wrap citation brackets in a styled span
+                    # doing it this way instead of regex because simpler and it works fine
+                    answer_text = data["answer"]
+                    answer_html = answer_text.replace("[", '<span class="cite">[').replace("]", "]</span>")
+                    st.markdown(
+                        f'<div style="font-size:1.05rem; line-height:1.7; color:#334155;">{answer_html}</div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.warning("Not enough info to answer confidently")
+                    refusal_info = data.get("refusal", {})
+                    if refusal_info:
+                        st.markdown(f"**Found:** {refusal_info.get('what_is_found', '—')}")
+                        st.markdown(f"**Missing:** {refusal_info.get('what_is_missing', '—')}")
+
+            with right_col:
+                st.markdown("### Scores")
+
+                conf_score = data["confidence_score"]
+                col = confidence_color(conf_score)
+
+                # rendering cards manually since st.metric doesn't let me style the number size
+                st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size:0.8rem; color:#64748b; font-weight:600; letter-spacing:0.05em; text-transform:uppercase;">Retrieval Confidence</div>
+                        <div style="font-size:2.4rem; font-weight:800; color:{col}; margin-top:4px;">
+                            {conf_score}<span style="font-size:1rem; color:#94a3b8;">/10</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+                cov = data["citation_coverage"]
+                st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size:0.8rem; color:#64748b; font-weight:600; letter-spacing:0.05em; text-transform:uppercase;">Citation Coverage</div>
+                        <div style="font-size:2rem; font-weight:700; color:#1e3a8a; margin-top:4px;">{cov}%</div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            st.divider()
+
+            # hybrid vs dense comparison
+            # useful for showing why we built the hybrid retriever in the first place
+            with st.expander("Compare: Hybrid vs Dense-only"):
+                dense_req = req_body.copy()
+                dense_req["alpha"] = 1.0
+                dense_req["use_reranker"] = False
+
+                dense_data = requests.post(f"{API_URL}/v1/ask", json=dense_req).json()
+
+                col_dense, col_hybrid = st.columns(2)
+
+                with col_dense:
+                    st.caption("DENSE ONLY")
+                    for s in dense_data.get("sources", [])[:3]:
+                        st.markdown(
+                            f'<div style="font-size:0.8rem; padding:6px 8px; background:#f1f5f9; border-radius:4px; margin-bottom:5px;">📄 {s["source"]} &nbsp;·&nbsp; id: {s["id"][:10]}...</div>',
+                            unsafe_allow_html=True
+                        )
+
+                with col_hybrid:
+                    st.caption("HYBRID (BM25 + SEMANTIC)")
+                    for s in data.get("sources", [])[:3]:
+                        st.markdown(
+                            f'<div style="font-size:0.8rem; padding:6px 8px; background:#eff6ff; border-radius:4px; margin-bottom:5px;">📄 {s["source"]} &nbsp;·&nbsp; {s["score"]:.4f}</div>',
+                            unsafe_allow_html=True
+                        )
+
+            # show the retrieved chunks
+            st.markdown("### Source Chunks")
+
+            sources = data.get("sources", [])
+            for i, s in enumerate(sources):
+                card_html = make_source_card(i + 1, s["source"], s["score"], s["content_preview"])
+                st.markdown(card_html, unsafe_allow_html=True)

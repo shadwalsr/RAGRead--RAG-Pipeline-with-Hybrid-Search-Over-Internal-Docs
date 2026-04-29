@@ -1,161 +1,121 @@
-"""
-Phase 3: Generation and Citation Layer
-
-Takes the top results from the Hybrid Retriever and uses a strict
-"Grounded Generation Prompt" to force the LLM to answer using ONLY 
-the provided context, while requiring numbered citations.
-"""
-
 import os
+import re
+import json
+import time
 from typing import List, Dict, Any
 from google import genai
+from google.genai import types
+
 
 class RAGGenerator:
-    """
-    Handles the final LLM generation step of the RAG pipeline.
-    """
-    
+
     def __init__(self, model_name: str = "gemini-flash-latest"):
         api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
-            raise EnvironmentError("Set GOOGLE_API_KEY to use the Generator.")
+            raise EnvironmentError("GOOGLE_API_KEY not set")
         self.client = genai.Client(api_key=api_key)
-        self.model_name = model_name
-        
-    def generate_answer(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
-        """
-        Generates a grounded answer with citations based strictly on the context chunks.
-        """
-        if not context_chunks:
-            return "I could not find any relevant information to answer your question."
-            
-        # 1. Build Numbered Context Blocks
-        # We format them as "Context Block X" so the LLM knows exactly what number to cite.
-        context_text = ""
-        for i, chunk in enumerate(context_chunks):
-            # i+1 to make it 1-indexed for the prompt
-            context_text += f"Context Block {i+1}:\n{chunk['content']}\n\n"
-            
-        # 2. Design the Grounded Generation Prompt
-        prompt = f"""You are a helpful, accurate, and precise assistant. 
-Your task is to answer the user's question based strictly and exclusively on the provided context blocks.
+        self.model = model_name
 
-STRICT INSTRUCTIONS:
-1. You must answer the question ONLY using the facts from the provided Context Blocks. 
-2. If the Context Blocks do not contain enough information to answer the question, clearly state: "I don't have enough information to answer that based on the provided documents." Do NOT use your general knowledge.
-3. Every factual claim you make MUST be followed by a citation to the specific Context Block it came from.
-4. Use bracketed references for citations, matching the Context Block number (e.g., [1], [2]). 
-5. Do not hallucinate, invent, or assume any information outside of the context.
+    def _build_context_block(self, chunks: List[Dict[str, Any]], include_source=False) -> str:
+        # formats the chunks into a numbered list the LLM can cite
+        ctx = ""
+        for i, chunk in enumerate(chunks):
+            if include_source:
+                src = chunk.get("metadata", {}).get("source", "unknown")
+                ctx += f"Context Block {i+1} (from {src}):\n{chunk['content']}\n\n"
+            else:
+                ctx += f"Context Block {i+1}:\n{chunk['content']}\n\n"
+        return ctx
 
-CONTEXT BLOCKS:
-{context_text}
+    def generate_answer(self, query: str, chunks: List[Dict[str, Any]]) -> str:
+        if not chunks:
+            return "No relevant documents found."
 
-USER QUESTION:
-{query}
+        ctx = self._build_context_block(chunks)
 
-ANSWER:
-"""
+        prompt = f"""You are a helpful assistant. Answer the question using only the context below.
+Every claim must cite the context block it came from using brackets like [1], [2].
+If the context doesn't contain the answer, say so - don't guess.
 
-        # 3. Generate the response
+CONTEXT:
+{ctx}
+
+QUESTION: {query}
+
+ANSWER:"""
+
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-            )
-            return response.text
-            
+            resp = self.client.models.generate_content(model=self.model, contents=prompt)
+            return resp.text
         except Exception as e:
-            return f"Error generating response: {e}"
+            return f"Generation error: {e}"
 
-    def verify_citations(self, answer: str, context_chunks: List[Dict[str, Any]]) -> str:
-        """
-        The 'Quality Layer'. Parses generated answers for citations like [1],
-        and uses an LLM-as-a-Judge to verify if the cited chunk actually supports the claim.
-        Flags unsupported citations with a warning.
-        """
-        import re
-        
-        print("    [Verifier] Checking citations...")
-        
-        # Split text into sentences for granular claim checking
+    def verify_citations(self, answer: str, chunks: List[Dict[str, Any]]) -> str:
+        # goes sentence by sentence and checks that each [n] citation is actually supported
+        # this is the "self-auditing" part - catches hallucinated citations
+        print("  checking citations...")
+
         sentences = re.split(r'(?<=[.!?])\s+', answer)
-        verified_answer = answer
-        
-        for sentence in sentences:
-            # Find all citations like [1] or [2]
-            cites = re.findall(r'\[(\d+)\]', sentence)
-            if not cites:
+        checked = answer
+
+        for sent in sentences:
+            cited_nums = re.findall(r'\[(\d+)\]', sent)
+            if not cited_nums:
                 continue
-                
-            original_sentence = sentence
-            new_sentence = sentence
-            
-            for cite in set(cites):
-                cite_idx = int(cite) - 1
-                if 0 <= cite_idx < len(context_chunks):
-                    chunk_content = context_chunks[cite_idx]["content"]
-                    
-                    prompt = f"""You are a strict citation verifier.
-Given a CLAIM and a CONTEXT chunk, determine if the CONTEXT provides enough information to fully support the CLAIM.
 
-CLAIM: "{sentence}"
+            updated_sent = sent
 
-CONTEXT: "{chunk_content}"
+            for num in set(cited_nums):
+                idx = int(num) - 1
+                if not (0 <= idx < len(chunks)):
+                    continue
 
-Does the CONTEXT fully support the CLAIM? Answer strictly with a single word: YES or NO.
+                chunk_text = chunks[idx]["content"]
+
+                judge_prompt = f"""Does the following CONTEXT support the CLAIM?
+Answer with one word only: YES or NO.
+
+CLAIM: "{sent}"
+CONTEXT: "{chunk_text}"
 """
-                    try:
-                        response = self.client.models.generate_content(
-                            model=self.model_name,
-                            contents=prompt
-                        )
-                        result = response.text.strip().upper()
-                        
-                        # If the LLM Judge says NO, flag it
-                        if not result.startswith("YES"):
-                            print(f"      -> Flagged [Chunk {cite}] for unsupported claim: '{sentence[:50]}...'")
-                            new_sentence = new_sentence.replace(f"[{cite}]", f"[{cite} ⚠️ UNVERIFIED]")
-                            
-                    except Exception as e:
-                        print(f"      -> API Error during verification: {e}")
-                        
-            # Apply any flagged warnings back to the main answer
-            if original_sentence != new_sentence:
-                verified_answer = verified_answer.replace(original_sentence, new_sentence)
-                
-        return verified_answer
+                try:
+                    resp = self.client.models.generate_content(model=self.model, contents=judge_prompt)
+                    verdict = resp.text.strip().upper()
 
-    def generate_comprehensive_response(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Phase 3, Steps 3 & 4: Generates a grounded answer alongside a Confidence Report,
-        and gracefully handles the 'I Don't Know' case with a structured refusal.
-        Uses structured JSON output to force the LLM to evaluate its own context.
-        """
-        import json
-        from google.genai import types
+                    if not verdict.startswith("YES"):
+                        print(f"  flagged [{num}]: '{sent[:60]}...'")
+                        updated_sent = updated_sent.replace(f"[{num}]", f"[{num} UNVERIFIED]")
 
-        if not context_chunks:
+                except Exception as e:
+                    # if the judge call fails just skip - better than crashing the whole response
+                    print(f"  verifier error on [{num}]: {e}")
+
+            if updated_sent != sent:
+                checked = checked.replace(sent, updated_sent)
+
+        return checked
+
+    def generate_comprehensive_response(self, query: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not chunks:
             return {
                 "status": "refused",
-                "answer": "I don't have any documents to search.",
-                "report": {"retrieval_confidence": 0, "completeness": "None"}
+                "can_answer": False,
+                "answer": "No documents available.",
+                "retrieval_confidence_score": 0
             }
 
-        context_text = ""
-        for i, chunk in enumerate(context_chunks):
-            source = chunk.get("metadata", {}).get("source", "Unknown")
-            context_text += f"Context Block {i+1} (Source: {source}):\n{chunk['content']}\n\n"
+        ctx = self._build_context_block(chunks, include_source=True)
 
-        prompt = f"""You are an elite enterprise AI assistant.
-Evaluate the CONTEXT BLOCKS against the USER QUERY.
+        # asking for JSON output directly - cleaner than parsing free text
+        prompt = f"""You are an AI assistant. Read the context blocks and answer the user's query.
 
-INSTRUCTIONS:
-1. Evaluate if the context contains enough information to answer the query. Assign a 'retrieval_confidence_score' from 0 to 10.
-2. If the score is < 5, set 'can_answer' to false. Provide a 'structured_refusal' explaining what you found, what is missing, and what type of documents the user should check.
-3. If the score is >= 5, set 'can_answer' to true. Generate the 'answer' using strict bracketed citations (e.g., [1]) pointing to the Context Blocks.
-4. Evaluate 'answer_completeness': Does your answer address all parts of the user's query?
+Rules:
+1. Score your confidence in the retrieved context from 0-10 as retrieval_confidence_score
+2. If score < 5, set can_answer to false and fill in structured_refusal
+3. If score >= 5, write an answer with bracketed citations like [1], [2]
+4. Fill in answer_completeness: did you cover everything in the query?
 
-Respond strictly in this JSON schema:
+Return valid JSON matching this schema exactly:
 {{
   "retrieval_confidence_score": int,
   "can_answer": bool,
@@ -168,90 +128,63 @@ Respond strictly in this JSON schema:
   "answer_completeness": str
 }}
 
-CONTEXT BLOCKS:
-{context_text}
+CONTEXT:
+{ctx}
 
-USER QUERY:
-{query}
-"""
+QUERY: {query}"""
+
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
+            resp = self.client.models.generate_content(
+                model=self.model,
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                )
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
-            result = json.loads(response.text)
-            
-            # Step 2: The Citation Quality Layer (Coverage)
+            result = json.loads(resp.text)
+
+            # run the citation verifier if there's an answer
             if result.get("can_answer") and result.get("answer"):
-                # Run the LLM-as-a-judge verifier on the generated answer
-                raw_answer = result["answer"]
-                verified_answer = self.verify_citations(raw_answer, context_chunks)
-                result["verified_answer"] = verified_answer
-                
-                # Calculate Citation Coverage stats
-                import re
-                total_cites = len(re.findall(r'\[\d+\]', raw_answer))
-                failed_cites = len(re.findall(r'⚠️ UNVERIFIED', verified_answer))
-                
-                if total_cites > 0:
-                    coverage_pct = round(((total_cites - failed_cites) / total_cites) * 100)
-                else:
-                    coverage_pct = 100 # No citations used, so technically 100% valid
-                    
-                result["citation_coverage_pct"] = coverage_pct
-                
+                raw = result["answer"]
+                verified = self.verify_citations(raw, chunks)
+                result["verified_answer"] = verified
+
+                # count how many citations survived the verification pass
+                total = len(re.findall(r'\[\d+\]', raw))
+                failed = len(re.findall(r'UNVERIFIED', verified))
+                result["citation_coverage_pct"] = round(((total - failed) / total) * 100) if total > 0 else 100
+
             return result
-            
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-# For testing
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
     from retriever import HybridRetriever
-    import time
-    import json
-    
+
     load_dotenv()
-    
-    # Query 1: Should be answerable
-    query1 = "What role did Shadwal have at Whyschool Academy?"
-    # Query 2: Unanswerable (testing Structured Refusal)
-    query2 = "What is Shadwal's favorite ice cream flavor?"
-    
+
     retriever = HybridRetriever()
     generator = RAGGenerator()
-    
-    for q in [query1, query2]:
-        print(f"\n{'='*50}\nTESTING QUERY: '{q}'\n{'='*50}")
-        
+
+    test_questions = [
+        "What role did Shadwal have at Whyschool Academy?",
+        "What is Shadwal's favorite ice cream flavor?"  # this one should get refused
+    ]
+
+    for q in test_questions:
+        print(f"\n--- {q} ---")
         chunks = retriever.retrieve(q, top_k=3, use_reranker=False)
-        print(f"Retrieved {len(chunks)} chunks.")
-        
-        response_data = generator.generate_comprehensive_response(q, chunks)
-        
-        # We might hit rate limits, so handle errors cleanly
-        if response_data.get("status") == "error":
-            print(f"API Error: {response_data.get('message')}")
-            time.sleep(15) # cooldown
-            continue
-            
-        print(f"\n--- CONFIDENCE REPORT ---")
-        print(f"Retrieval Confidence: {response_data.get('retrieval_confidence_score')}/10")
-        print(f"Answer Completeness:  {response_data.get('answer_completeness')}")
-        
-        if not response_data.get("can_answer"):
-            print("\n--- STRUCTURED REFUSAL ---")
-            refusal = response_data.get("structured_refusal", {})
-            print(f"Found:   {refusal.get('what_was_found')}")
-            print(f"Missing: {refusal.get('what_is_missing')}")
-            print(f"Suggest: {refusal.get('suggested_documents')}")
+        out = generator.generate_comprehensive_response(q, chunks)
+
+        if out.get("status") == "error":
+            print(f"error: {out['message']}")
+        elif not out.get("can_answer"):
+            refusal = out.get("structured_refusal", {})
+            print(f"refused - missing: {refusal.get('what_is_missing')}")
         else:
-            print(f"Citation Coverage:    {response_data.get('citation_coverage_pct')}%")
-            print("\n--- FINAL VERIFIED ANSWER ---")
-            print(response_data.get("verified_answer"))
-            
-        time.sleep(15) # prevent API rate limiting between queries
+            print(f"confidence: {out['retrieval_confidence_score']}/10")
+            print(f"coverage: {out.get('citation_coverage_pct')}%")
+            print(out.get("verified_answer"))
+
+        time.sleep(15)
