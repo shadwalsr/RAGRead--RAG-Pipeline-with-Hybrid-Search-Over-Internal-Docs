@@ -5,6 +5,7 @@ import chromadb
 from rank_bm25 import BM25Okapi
 from google import genai
 from typing import List, Dict, Any
+from rate_limiter import call_with_retry
 
 class HybridStore:
     def __init__(self, db_path="data/vectorstore", bm25_path="data/bm25_index.pkl"):
@@ -41,7 +42,8 @@ class HybridStore:
     def dense_search(self, query, n_results=5, where=None):
         # this handles the "meaning" based search
         client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
-        emb_resp = client.models.embed_content(
+        emb_resp = call_with_retry(
+            client.models.embed_content,
             model="gemini-embedding-001",
             contents=query
         )
@@ -116,7 +118,8 @@ class HybridStore:
                 continue
                 
             # embed and add to chroma
-            emb_resp = client.models.embed_content(
+            emb_resp = call_with_retry(
+                client.models.embed_content,
                 model="gemini-embedding-001",
                 contents=chunk["content"]
             )

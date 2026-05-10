@@ -5,6 +5,7 @@ import time
 from typing import List, Dict, Any
 from google import genai
 from google.genai import types
+from rate_limiter import call_with_retry
 
 
 class RAGGenerator:
@@ -45,7 +46,7 @@ QUESTION: {query}
 ANSWER:"""
 
         try:
-            resp = self.client.models.generate_content(model=self.model, contents=prompt)
+            resp = call_with_retry(self.client.models.generate_content, model=self.model, contents=prompt)
             return resp.text
         except Exception as e:
             return f"Generation error: {e}"
@@ -79,7 +80,7 @@ CLAIM: "{sent}"
 CONTEXT: "{chunk_text}"
 """
                 try:
-                    resp = self.client.models.generate_content(model=self.model, contents=judge_prompt)
+                    resp = call_with_retry(self.client.models.generate_content, model=self.model, contents=judge_prompt)
                     verdict = resp.text.strip().upper()
 
                     if not verdict.startswith("YES"):
@@ -134,7 +135,8 @@ CONTEXT:
 QUERY: {query}"""
 
         try:
-            resp = self.client.models.generate_content(
+            resp = call_with_retry(
+                self.client.models.generate_content,
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type="application/json")

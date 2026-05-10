@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from google import genai
 from google.genai import types
 from storage import HybridStore
+from rate_limiter import call_with_retry
 
 class HybridRetriever:
     def __init__(self, db: HybridStore = None):
@@ -62,7 +63,8 @@ Chunks:
 {text_to_judge}
 """
         try:
-            resp = client.models.generate_content(
+            resp = call_with_retry(
+                client.models.generate_content,
                 model='gemini-flash-latest',
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
