@@ -29,10 +29,10 @@ def call_with_retry(fn, *args, retries=MAX_RETRIES, **kwargs):
                     wait_time = int(delay_match.group(1)) + 5  # add buffer
                 
                 if attempt < retries:
-                    print(f"  ⏳ rate limited (attempt {attempt}/{retries}), waiting {wait_time}s...")
+                    print(f"  [WAIT] rate limited (attempt {attempt}/{retries}), waiting {wait_time}s...")
                     time.sleep(wait_time)
                 else:
-                    print(f"  ❌ rate limit: max retries ({retries}) exhausted")
+                    print(f"  [FAIL] rate limit: max retries ({retries}) exhausted")
                     raise
             else:
                 # not a rate limit error — don't retry, just raise
