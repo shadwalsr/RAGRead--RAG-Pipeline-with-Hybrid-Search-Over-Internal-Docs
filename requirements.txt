@@ -8,3 +8,8 @@ numpy
 python-dotenv
 chromadb
 rank_bm25
+pymupdf
+fastapi
+uvicorn
+streamlit
+requests

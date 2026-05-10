@@ -18,6 +18,21 @@ To solve this, we implemented a **Structured Generation Pipeline** that forces t
 
 In `src/generator.py`, we overhauled the generation prompt to utilize Gemini's structured JSON output capabilities. Instead of just returning a string of text, the LLM now acts as an evaluator and returns a comprehensive JSON object:
 
+### The Confidence Evaluation Flow
+
+```mermaid
+flowchart TD
+    A[User Query] --> B[Hybrid Retrieval]
+    B --> C[LLM Evaluator: Fast LLM]
+    C -->|Generates JSON| D{Confidence >= 5?}
+    D -- Yes --> E[Extract Answer & Verify Citations]
+    D -- No --> F[Trigger Structured Refusal]
+    E --> G[Final User Output]
+    F --> G
+```
+
+### Structured Output Schema
+
 ```json
 {
   "retrieval_confidence_score": 9,
@@ -52,7 +67,18 @@ This provides the user with transparency, context, and actionable next steps, ra
 
 ---
 
-## 4. Why This Architecture Lands Interviews
+## 4. Edge Case Handling Benchmarks
+
+| Metric | Standard RAG | RAG + Confidence Layer |
+| :--- | :--- | :--- |
+| **Out-of-Domain Response** | Hallucinates or generic apology | **Structured "Missing Info" Report** |
+| **Response Format** | Unpredictable Text | **Strict JSON Schema** |
+| **Confidence Metric** | None | **Self-Evaluated (0-10 Scale)** |
+| **User Experience (Failure)** | Frustrating Dead Ends | **Actionable Next Steps** |
+
+---
+
+## 5. Why This Architecture Lands Interviews
 
 Most candidates build systems that hallucinate comfortably. They stitch together LangChain tutorials that assume the database will always have the perfect answer. 
 
