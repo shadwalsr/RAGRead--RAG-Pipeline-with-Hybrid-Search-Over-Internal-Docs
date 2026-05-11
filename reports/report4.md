@@ -1,7 +1,7 @@
 # Report 4: Hybrid Retrieval Engine — Fusing Dense and Sparse Search
 
 **Author:** Shadwal Singh\
-**Date:** May 2, 2026\
+**Date:** april 13, 2026\
 **Step:** Phase 2 — Refinement and Reciprocal Rank Fusion (RRF)\
 **Context:** Overcoming the "Whyschool Paradox" with Hybrid Search.
 

@@ -1,7 +1,7 @@
 # Report 6: Grounded Generation and the Free-Tier Reality
 
 **Author:** Shadwal Singh\
-**Date:** May 2, 2026\
+**Date:** april 20, 2026\
 **Step:** Phase 3 (Step 1) — Generation and Citation Layer
 
 ---

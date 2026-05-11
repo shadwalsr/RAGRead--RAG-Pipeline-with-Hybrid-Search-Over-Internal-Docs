@@ -1,7 +1,7 @@
 # Storage & Deduplication Report — Production RAG Pipeline
 
 **Author:** Shadwal Singh\
-**Date:** May 2, 2026\
+**Date:** april 3, 2026\
 **Step:** 5 — Storage, Deduplication & Hybrid Search Indexing\
 **Input:** 27 semantic chunks from `shadwal singh (3).pdf`
 
@@ -114,13 +114,13 @@ Every chunk stored carries full provenance:
 
 ```json
 {
-    "source": "shadwal singh (3).pdf",
-    "page_number": 1,
-    "headings": "[]",
-    "format": "pdf",
-    "chunking_strategy": "semantic",
-    "chunk_index": 0,
-    "avg_similarity": 0.4982
+  "source": "shadwal singh (3).pdf",
+  "page_number": 1,
+  "headings": "[]",
+  "format": "pdf",
+  "chunking_strategy": "semantic",
+  "chunk_index": 0,
+  "avg_similarity": 0.4982
 }
 ```
 
@@ -276,9 +276,15 @@ production_rag/
 ## 5. Key Learnings
 
 ### 5.1 Case Study: The "Whyschool" Recovery (Phase 2)
-In Report 1, we saw how `W h y s c h o o l` was unsearchable. 
-- **The Solution:** In this phase, we implemented a custom **Two-Pass Tokenizer**. It identifies runs of single characters (W, h, y...) and collapses them into a single word: `whyschool`.
-- **The Result:** The BM25 index now correctly maps the query "Whyschool" to the relevant chunks. This was the first "Senior-level" win of the project—solving a data-quality problem that stops most basic RAG tutorials in their tracks.
+
+In Report 1, we saw how `W h y s c h o o l` was unsearchable.
+
+- **The Solution:** In this phase, we implemented a custom **Two-Pass
+  Tokenizer**. It identifies runs of single characters (W, h, y...) and
+  collapses them into a single word: `whyschool`.
+- **The Result:** The BM25 index now correctly maps the query "Whyschool" to the
+  relevant chunks. This was the first "Senior-level" win of the project—solving
+  a data-quality problem that stops most basic RAG tutorials in their tracks.
 
 ### 5.2 ChromaDB Uses Cosine Distance, Not Similarity
 

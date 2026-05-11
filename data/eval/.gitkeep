@@ -1,0 +1,2 @@
+# Place your golden_qa.json benchmark file here.
+# Run: python scratch/generate_golden_qa.py to auto-generate one from your docs.
